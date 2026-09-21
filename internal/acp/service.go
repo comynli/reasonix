@@ -1816,7 +1816,27 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	// The rebuilt controller must keep the client-capability wiring (fs
 	// overlay, host terminal) a model/effort switch would otherwise drop.
 	s.bindClientIO(&rebuildParams, sess.id)
-	newCtrl, err := s.factory.NewSession(ctx, rebuildParams)
+	// Prefer the SessionRebuilder seam: boot.Rebuild inherits the outgoing
+	// controller's v3 session binding (service+runtime), so the replacement
+	// keeps writing to the same storage session. A plain NewSession build
+	// drops that binding; AdoptHistory's empty-path branch then keeps the
+	// session in memory and the next turn mints a brand-new storage session,
+	// splitting one conversation into one session per config change (mirrors
+	// reloadSessionExtensionsLocked).
+	var (
+		newCtrl *control.Controller
+		err     error
+	)
+	if rebuilder, ok := s.factory.(SessionRebuilder); ok {
+		if old, ok := cur.(*control.Controller); ok {
+			newCtrl, err = rebuilder.RebuildSession(ctx, rebuildParams, old)
+		}
+	}
+	if newCtrl == nil && err == nil {
+		// Fallback for factories without the SessionRebuilder seam (test
+		// doubles, exotic hosts): keep the legacy fresh-build behavior.
+		newCtrl, err = s.factory.NewSession(ctx, rebuildParams)
+	}
 	if err != nil {
 		return &RPCError{Code: ErrInternal, Message: "session config: " + err.Error()}
 	}
